@@ -19,7 +19,6 @@ pythonpath = ["."]
 
 [tool.coverage.run]
 source = ["app", "main"]
-relative_files = true
 
 [tool.coverage.report]
 show_missing = true
