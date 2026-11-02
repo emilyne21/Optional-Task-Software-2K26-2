@@ -1,8 +1,10 @@
+from enum import StrEnum
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.order_repository import OrderRepository
 from app.pricing import calculate_totals
 
 
@@ -28,66 +30,55 @@ class OrderInput(BaseModel):
         return self
 
 
+class OrderStatus(StrEnum):
+    """Estados posibles de un pedido. Un pedido solo cambia de estado desde PENDING."""
+    PENDING = "pending"
+    CONFIRMED = "confirmed"
+    CANCELLED = "cancelled"
+
+
 class OrderService:
     def __init__(self, database):
         self.database = database
 
     def save(self, data, order_id=None):
         with self.database.connect() as connection:
+            repository = OrderRepository(connection)
             if order_id is not None:
-                old = connection.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+                old = repository.find_order(order_id)
                 if old is None:
                     raise HTTPException(404, "Pedido no encontrado")
-                if old["status"] != "pending":
+                if old["status"] != OrderStatus.PENDING:
                     raise HTTPException(409, "Solo puede editar pedidos pendientes")
-            customer = connection.execute("SELECT * FROM customers WHERE id = ?", (data.customer_id,)).fetchone()
+            customer = repository.find_customer(data.customer_id)
             if customer is None:
                 raise HTTPException(404, "Cliente no encontrado")
             subtotal = 0
             lines = []
             for item in data.items:
-                product = connection.execute("SELECT * FROM products WHERE id = ?", (item.product_id,)).fetchone()
+                product = repository.find_product(item.product_id)
                 if product is None:
                     raise HTTPException(404, f"Producto {item.product_id} no encontrado")
                 subtotal += product["price_cents"] * item.quantity
                 lines.append((item.product_id, item.quantity, product["price_cents"]))
             pricing = calculate_totals(customer["category"], data.shipping, subtotal)
-            values = (data.customer_id, customer["category"], data.address, data.city, data.postal_code,
-                      data.shipping, pricing["subtotal_cents"], pricing["discount_cents"],
-                      pricing["shipping_cents"], pricing["total_cents"])
             if order_id is None:
-                cursor = connection.execute(
-                    """INSERT INTO orders(customer_id, customer_category, address, city, postal_code,
-                       shipping, subtotal_cents, discount_cents, shipping_cents, total_cents)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", values,
-                )
-                order_id = cursor.lastrowid
+                order_id = repository.insert_order(data, customer["category"], pricing)
+                repository.add_items(order_id, lines)
             else:
-                connection.execute(
-                    """UPDATE orders SET customer_id = ?, customer_category = ?, address = ?, city = ?,
-                       postal_code = ?, shipping = ?, subtotal_cents = ?, discount_cents = ?,
-                       shipping_cents = ?, total_cents = ? WHERE id = ?""", (*values, order_id),
-                )
-                connection.execute("DELETE FROM order_items WHERE order_id = ?", (order_id,))
-            connection.executemany(
-                "INSERT INTO order_items(order_id, product_id, quantity, unit_price_cents) VALUES (?, ?, ?, ?)",
-                [(order_id, *line) for line in lines],
-            )
-            result = dict(connection.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone())
-            result["items"] = [dict(row) for row in connection.execute(
-                "SELECT product_id, quantity, unit_price_cents FROM order_items WHERE order_id = ? ORDER BY id",
-                (order_id,),
-            )]
-            return result
+                repository.update_order(order_id, data, customer["category"], pricing)
+                repository.replace_items(order_id, lines)
+            return repository.find_order_with_items(order_id)
 
     def quote(self, data):
         with self.database.connect() as connection:
-            customer = connection.execute("SELECT * FROM customers WHERE id = ?", (data.customer_id,)).fetchone()
+            repository = OrderRepository(connection)
+            customer = repository.find_customer(data.customer_id)
             if customer is None:
                 raise HTTPException(404, "Cliente no encontrado")
             subtotal = 0
             for item in data.items:
-                product = connection.execute("SELECT * FROM products WHERE id = ?", (item.product_id,)).fetchone()
+                product = repository.find_product(item.product_id)
                 if product is None:
                     raise HTTPException(404, f"Producto {item.product_id} no encontrado")
                 subtotal += product["price_cents"] * item.quantity
@@ -95,69 +86,57 @@ class OrderService:
 
     def get(self, order_id):
         with self.database.connect() as connection:
-            order = connection.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+            order = OrderRepository(connection).find_order_with_items(order_id)
             if order is None:
                 raise HTTPException(404, "Pedido no encontrado")
-            result = dict(order)
-            result["items"] = [dict(row) for row in connection.execute(
-                "SELECT product_id, quantity, unit_price_cents FROM order_items WHERE order_id = ? ORDER BY id",
-                (order_id,),
-            )]
-            return result
+            return order
 
     def list(self):
         with self.database.connect() as connection:
-            return [dict(row) for row in connection.execute("SELECT * FROM orders ORDER BY id")]
+            return OrderRepository(connection).list_orders()
 
     def confirm(self, order_id):
         with self.database.connect() as connection:
-            order = connection.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+            repository = OrderRepository(connection)
+            order = repository.find_order(order_id)
             if order is None:
                 raise HTTPException(404, "Pedido no encontrado")
-            if order["status"] != "pending":
+            if order["status"] != OrderStatus.PENDING:
                 raise HTTPException(409, "El pedido ya no está pendiente")
-            items = connection.execute("SELECT * FROM order_items WHERE order_id = ?", (order_id,)).fetchall()
-            for item in items:
-                cursor = connection.execute(
-                    "UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?",
-                    (item["quantity"], item["product_id"], item["quantity"]),
-                )
-                if cursor.rowcount == 0:
+            for item in repository.list_items(order_id):
+                if not repository.take_stock(item["product_id"], item["quantity"]):
                     raise HTTPException(409, f"Stock insuficiente para producto {item['product_id']}")
-            customer = connection.execute("SELECT * FROM customers WHERE id = ?", (order["customer_id"],)).fetchone()
+            customer = repository.find_customer(order["customer_id"])
             message = f"Pedido {order_id} confirmado. Total: {order['total_cents']} centavos."
-            connection.execute(
-                "INSERT INTO notifications(order_id, recipient, message) VALUES (?, ?, ?)",
-                (order_id, customer["email"], message),
-            )
-            connection.execute("UPDATE orders SET status = 'confirmed' WHERE id = ?", (order_id,))
-            return {"id": order_id, "status": "confirmed", "message": message}
+            repository.add_notification(order_id, customer["email"], message)
+            repository.set_status(order_id, OrderStatus.CONFIRMED)
+            return {"id": order_id, "status": OrderStatus.CONFIRMED, "message": message}
 
     def cancel(self, order_id):
         with self.database.connect() as connection:
-            order = connection.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+            repository = OrderRepository(connection)
+            order = repository.find_order(order_id)
             if order is None:
                 raise HTTPException(404, "Pedido no encontrado")
-            if order["status"] != "pending":
+            if order["status"] != OrderStatus.PENDING:
                 raise HTTPException(409, "Solo puede cancelar pedidos pendientes")
-            connection.execute("UPDATE orders SET status = 'cancelled' WHERE id = ?", (order_id,))
-            return {"id": order_id, "status": "cancelled"}
+            repository.set_status(order_id, OrderStatus.CANCELLED)
+            return {"id": order_id, "status": OrderStatus.CANCELLED}
 
     def delete(self, order_id):
         with self.database.connect() as connection:
-            order = connection.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+            repository = OrderRepository(connection)
+            order = repository.find_order(order_id)
             if order is None:
                 raise HTTPException(404, "Pedido no encontrado")
-            if order["status"] != "pending":
+            if order["status"] != OrderStatus.PENDING:
                 raise HTTPException(409, "Solo puede eliminar pedidos pendientes")
-            connection.execute("DELETE FROM orders WHERE id = ?", (order_id,))
+            repository.delete_order(order_id)
 
     def notifications(self, order_id):
         self.get(order_id)
         with self.database.connect() as connection:
-            return [dict(row) for row in connection.execute(
-                "SELECT * FROM notifications WHERE order_id = ? ORDER BY id", (order_id,),
-            )]
+            return OrderRepository(connection).list_notifications(order_id)
 
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
