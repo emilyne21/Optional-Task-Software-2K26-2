@@ -3,6 +3,8 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.pricing import calculate_totals
+
 
 class ItemInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -49,21 +51,10 @@ class OrderService:
                     raise HTTPException(404, f"Producto {item.product_id} no encontrado")
                 subtotal += product["price_cents"] * item.quantity
                 lines.append((item.product_id, item.quantity, product["price_cents"]))
-            if customer["category"] == "premium":
-                discount = subtotal * 10 // 100
-            elif customer["category"] == "business":
-                discount = subtotal * 15 // 100
-            else:
-                discount = 0
-            if shipping == "pickup":
-                delivery = 0
-            elif shipping == "standard":
-                delivery = 0 if subtotal >= 10_000 else 1_000
-            else:
-                delivery = 2_500
-            total = subtotal - discount + delivery
+            pricing = calculate_totals(customer["category"], shipping, subtotal)
             values = (customer_id, customer["category"], address, city, postal_code, shipping,
-                      subtotal, discount, delivery, total)
+                      pricing["subtotal_cents"], pricing["discount_cents"],
+                      pricing["shipping_cents"], pricing["total_cents"])
             if order_id is None:
                 cursor = connection.execute(
                     """INSERT INTO orders(customer_id, customer_category, address, city, postal_code,
@@ -100,20 +91,7 @@ class OrderService:
                 if product is None:
                     raise HTTPException(404, f"Producto {item.product_id} no encontrado")
                 subtotal += product["price_cents"] * item.quantity
-            if customer["category"] == "premium":
-                discount = subtotal * 10 // 100
-            elif customer["category"] == "business":
-                discount = subtotal * 15 // 100
-            else:
-                discount = 0
-            if data.shipping == "pickup":
-                delivery = 0
-            elif data.shipping == "standard":
-                delivery = 0 if subtotal >= 10_000 else 1_000
-            else:
-                delivery = 2_500
-            return {"subtotal_cents": subtotal, "discount_cents": discount,
-                    "shipping_cents": delivery, "total_cents": subtotal - discount + delivery}
+            return calculate_totals(customer["category"], data.shipping, subtotal)
 
     def get(self, order_id):
         with self.database.connect() as connection:
