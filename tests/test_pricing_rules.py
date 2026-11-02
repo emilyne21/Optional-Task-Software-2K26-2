@@ -1,7 +1,17 @@
 """Reglas de precio probadas como funciones puras: sin base de datos ni HTTP."""
+from typing import get_args
+
 import pytest
 
-from app.pricing import calculate_discount, calculate_shipping, calculate_totals
+from app.customers import CustomerInput
+from app.orders import OrderInput
+from app.pricing import (
+    DISCOUNT_PERCENT_BY_CATEGORY,
+    SHIPPING_FEE_CENTS,
+    calculate_discount,
+    calculate_shipping,
+    calculate_totals,
+)
 
 
 @pytest.mark.parametrize(
@@ -44,3 +54,20 @@ def test_free_shipping_threshold_uses_subtotal_before_discount():
     assert totals["discount_cents"] == 1000
     assert totals["shipping_cents"] == 0
     assert totals["total_cents"] == 9000
+
+
+def test_every_customer_category_has_a_discount_rule():
+    categories = set(get_args(CustomerInput.model_fields["category"].annotation))
+    assert set(DISCOUNT_PERCENT_BY_CATEGORY) == categories
+
+
+def test_every_shipping_type_has_a_fee():
+    shipping_types = set(get_args(OrderInput.model_fields["shipping"].annotation))
+    assert set(SHIPPING_FEE_CENTS) == shipping_types
+
+
+def test_unknown_category_or_shipping_fails_instead_of_being_priced_silently():
+    with pytest.raises(KeyError):
+        calculate_discount("vip", 5000)
+    with pytest.raises(KeyError):
+        calculate_shipping("drone", 5000)
