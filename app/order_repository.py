@@ -5,6 +5,7 @@ El repositorio no abre conexiones ni confirma transacciones. Recibe la conexión
 OrderService con Database.connect(), así cada operación del servicio sigue siendo una sola
 transacción (commit al terminar, rollback si algo falla).
 """
+import json
 
 
 class OrderRepository:
@@ -44,6 +45,14 @@ class OrderRepository:
         result = dict(order)
         result["items"] = self.list_items(order_id)
         return result
+
+    def find_idempotency_key(self, key):
+        """Huella y respuesta guardadas para la clave, o None si la clave no se ha usado."""
+        row = self.connection.execute(
+            "SELECT request_hash, response FROM idempotency_keys WHERE key = ?", (key,)).fetchone()
+        if row is None:
+            return None
+        return {"request_hash": row["request_hash"], "response": json.loads(row["response"])}
 
     # ---------- escrituras ----------
 
@@ -94,6 +103,13 @@ class OrderRepository:
 
     def delete_order(self, order_id):
         self.connection.execute("DELETE FROM orders WHERE id = ?", (order_id,))
+
+    def add_idempotency_key(self, key, request_hash, response):
+        """Guarda la clave con la huella de la petición y la respuesta original."""
+        self.connection.execute(
+            "INSERT INTO idempotency_keys(key, request_hash, response) VALUES (?, ?, ?)",
+            (key, request_hash, json.dumps(response)),
+        )
 
     # ---------- auxiliares ----------
 
