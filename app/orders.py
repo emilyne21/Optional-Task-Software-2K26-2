@@ -32,7 +32,7 @@ class OrderService:
     def __init__(self, database):
         self.database = database
 
-    def save(self, customer_id, address, city, postal_code, shipping, items, order_id=None):
+    def save(self, data, order_id=None):
         with self.database.connect() as connection:
             if order_id is not None:
                 old = connection.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
@@ -40,20 +40,20 @@ class OrderService:
                     raise HTTPException(404, "Pedido no encontrado")
                 if old["status"] != "pending":
                     raise HTTPException(409, "Solo puede editar pedidos pendientes")
-            customer = connection.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
+            customer = connection.execute("SELECT * FROM customers WHERE id = ?", (data.customer_id,)).fetchone()
             if customer is None:
                 raise HTTPException(404, "Cliente no encontrado")
             subtotal = 0
             lines = []
-            for item in items:
+            for item in data.items:
                 product = connection.execute("SELECT * FROM products WHERE id = ?", (item.product_id,)).fetchone()
                 if product is None:
                     raise HTTPException(404, f"Producto {item.product_id} no encontrado")
                 subtotal += product["price_cents"] * item.quantity
                 lines.append((item.product_id, item.quantity, product["price_cents"]))
-            pricing = calculate_totals(customer["category"], shipping, subtotal)
-            values = (customer_id, customer["category"], address, city, postal_code, shipping,
-                      pricing["subtotal_cents"], pricing["discount_cents"],
+            pricing = calculate_totals(customer["category"], data.shipping, subtotal)
+            values = (data.customer_id, customer["category"], data.address, data.city, data.postal_code,
+                      data.shipping, pricing["subtotal_cents"], pricing["discount_cents"],
                       pricing["shipping_cents"], pricing["total_cents"])
             if order_id is None:
                 cursor = connection.execute(
@@ -170,9 +170,7 @@ def quote_order(data: OrderInput, request: Request):
 
 @router.post("", status_code=201)
 def create_order(data: OrderInput, request: Request):
-    return OrderService(request.app.state.database).save(
-        data.customer_id, data.address, data.city, data.postal_code, data.shipping, data.items,
-    )
+    return OrderService(request.app.state.database).save(data)
 
 
 @router.get("")
@@ -187,9 +185,7 @@ def get_order(order_id: int, request: Request):
 
 @router.put("/{order_id}")
 def update_order(order_id: int, data: OrderInput, request: Request):
-    return OrderService(request.app.state.database).save(
-        data.customer_id, data.address, data.city, data.postal_code, data.shipping, data.items, order_id,
-    )
+    return OrderService(request.app.state.database).save(data, order_id)
 
 
 @router.delete("/{order_id}", status_code=204)
