@@ -1,0 +1,87 @@
+%% Diagrama de clases FINAL (tag estado-final). Solo clases reales del código.
+%% app/pricing.py contiene solo funciones y constantes (calculate_totals, etc.). No es una clase y no se dibuja.
+%% OrderService la usa mediante llamadas a funciones del módulo.
+classDiagram
+    direction TB
+
+    class Database {
+        +path: str
+        +connect() contextmanager
+        +initialize() None
+    }
+
+    class ItemInput {
+        <<pydantic BaseModel>>
+        +product_id: int
+        +quantity: int
+    }
+
+    class OrderInput {
+        <<pydantic BaseModel>>
+        +customer_id: int
+        +address: str
+        +city: str
+        +postal_code: str
+        +shipping: Literal
+        +items: list~ItemInput~
+        +unique_products() OrderInput
+    }
+
+    class OrderStatus {
+        <<enumeration>>
+        PENDING
+        CONFIRMED
+        CANCELLED
+    }
+
+    class OrderService {
+        +database: Database
+        +save(data, order_id) dict
+        +quote(data) dict
+        +get(order_id) dict
+        +list() list
+        +confirm(order_id) dict
+        +cancel(order_id) dict
+        +delete(order_id) None
+        +notifications(order_id) list
+    }
+
+    class OrderRepository {
+        +connection: sqlite3.Connection
+        +find_order(order_id) Row
+        +find_customer(customer_id) Row
+        +find_product(product_id) Row
+        +list_orders() list
+        +list_items(order_id) list
+        +list_notifications(order_id) list
+        +find_order_with_items(order_id) dict
+        +insert_order(data, category, pricing) int
+        +update_order(order_id, data, category, pricing) None
+        +replace_items(order_id, lines) None
+        +add_items(order_id, lines) None
+        +take_stock(product_id, quantity) bool
+        +add_notification(order_id, recipient, message) None
+        +set_status(order_id, status) None
+        +delete_order(order_id) None
+        -_order_values(data, category, pricing) tuple$
+    }
+
+    class CustomerInput {
+        <<pydantic BaseModel>>
+        +name: str
+        +email: EmailStr
+        +category: Literal
+    }
+
+    class ProductInput {
+        <<pydantic BaseModel>>
+        +name: str
+        +price_cents: int
+        +stock: int
+    }
+
+    OrderService --> Database : database
+    OrderService ..> OrderRepository : crea una por operación
+    OrderService ..> OrderStatus : usa
+    OrderService ..> OrderInput : save(data), quote(data)
+    OrderInput "1" *-- "1..100" ItemInput : items

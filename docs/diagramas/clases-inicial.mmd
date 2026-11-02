@@ -1,0 +1,57 @@
+%% Diagrama de clases INICIAL (tag estado-inicial). Solo clases reales del código.
+%% Las funciones de las rutas (router) y main.create_app son funciones de módulo, no clases, y no se dibujan.
+classDiagram
+    direction TB
+
+    class Database {
+        +path: str
+        +connect() contextmanager
+        +initialize() None
+    }
+
+    class ItemInput {
+        <<pydantic BaseModel>>
+        +product_id: int
+        +quantity: int
+    }
+
+    class OrderInput {
+        <<pydantic BaseModel>>
+        +customer_id: int
+        +address: str
+        +city: str
+        +postal_code: str
+        +shipping: Literal
+        +items: list~ItemInput~
+        +unique_products() OrderInput
+    }
+
+    class OrderService {
+        +database: Database
+        +save(customer_id, address, city, postal_code, shipping, items, order_id) dict
+        +quote(data) dict
+        +get(order_id) dict
+        +list() list
+        +confirm(order_id) dict
+        +cancel(order_id) dict
+        +delete(order_id) None
+        +notifications(order_id) list
+    }
+
+    OrderInput "1" *-- "1..100" ItemInput : items
+    class CustomerInput {
+        <<pydantic BaseModel>>
+        +name: str
+        +email: EmailStr
+        +category: Literal
+    }
+
+    class ProductInput {
+        <<pydantic BaseModel>>
+        +name: str
+        +price_cents: int
+        +stock: int
+    }
+
+    OrderService --> Database : database
+    OrderService ..> OrderInput : quote(data)
