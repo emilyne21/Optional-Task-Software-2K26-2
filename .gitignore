@@ -221,3 +221,11 @@ __marimo__/
 
 data/
 .scannerwork/
+
+# Bases de datos locales de SQLite
+*.sqlite
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
